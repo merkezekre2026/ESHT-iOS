@@ -3,6 +3,9 @@ name: Unsigned iOS Build
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -16,7 +19,7 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Resolve project and build unsigned
+      - name: Resolve project and build unsigned archive
         shell: bash
         run: |
           set -euo pipefail
@@ -24,13 +27,83 @@ jobs:
           workspace="$(find . -maxdepth 2 -name '*.xcworkspace' | head -n1 || true)"
           project="$(find . -maxdepth 2 -name '*.xcodeproj' | head -n1 || true)"
 
+          if [[ -z "$workspace" && -z "$project" ]]; then
+            echo "No .xcworkspace/.xcodeproj found. Generating a temporary .xcodeproj with XcodeGen..."
+
+            brew install xcodegen
+            mkdir -p build/generated
+
+            cat > build/generated/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>$(DEVELOPMENT_LANGUAGE)</string>
+            <key>CFBundleExecutable</key>
+            <string>$(EXECUTABLE_NAME)</string>
+            <key>CFBundleIdentifier</key>
+            <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>$(PRODUCT_NAME)</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>UILaunchStoryboardName</key>
+            <string></string>
+            <key>UIApplicationSceneManifest</key>
+            <dict>
+              <key>UIApplicationSupportsMultipleScenes</key>
+              <false/>
+            </dict>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+              <string>UIInterfaceOrientationPortrait</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+
+            cat > build/generated/project.yml <<'XCODEGEN'
+          name: GeneratedUnsignedBuild
+          options:
+            bundleIdPrefix: com.esht
+          targets:
+            ESHTApp:
+              type: application
+              platform: iOS
+              deploymentTarget: "15.0"
+              sources:
+                - path: .
+                  excludes:
+                    - .github
+                    - build
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.esht.generated
+                  SWIFT_VERSION: 5.0
+                  INFOPLIST_FILE: build/generated/Info.plist
+                  CODE_SIGNING_ALLOWED: NO
+                  CODE_SIGNING_REQUIRED: NO
+                  CODE_SIGN_IDENTITY: ""
+                  DEVELOPMENT_TEAM: ""
+              scheme:
+                testTargets: []
+          XCODEGEN
+
+            xcodegen generate --spec build/generated/project.yml
+            project="./GeneratedUnsignedBuild.xcodeproj"
+          fi
+
           if [[ -n "$workspace" ]]; then
             container_flag=(-workspace "$workspace")
-          elif [[ -n "$project" ]]; then
-            container_flag=(-project "$project")
           else
-            echo "No .xcworkspace or .xcodeproj found in repository."
-            exit 1
+            container_flag=(-project "$project")
           fi
 
           scheme="$(xcodebuild "${container_flag[@]}" -list | awk '/Schemes:/{flag=1; next} flag && NF {print; exit}' | xargs || true)"
@@ -47,16 +120,54 @@ jobs:
             -scheme "$scheme" \
             -configuration Release \
             -destination 'generic/platform=iOS' \
+            -archivePath build/UnsignedApp.xcarchive \
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            archive
 
-      - name: Upload build logs (always)
+      - name: Package unsigned IPA from archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$(find build/UnsignedApp.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -n1 || true)"
+
+          if [[ -z "$APP_PATH" ]]; then
+            echo "No .app found in archive products."
+            exit 1
+          fi
+
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/
+          (
+            cd build/ipa
+            /usr/bin/zip -qry ../UnsignedApp.ipa Payload
+          )
+
+          echo "IPA_PATH=build/UnsignedApp.ipa" >> "$GITHUB_ENV"
+
+      - name: Upload build outputs (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xcode-derived-data
-          path: build/DerivedData
+          name: unsigned-build-artifacts
+          path: |
+            build/DerivedData
+            build/UnsignedApp.xcarchive
+            build/UnsignedApp.ipa
+            GeneratedUnsignedBuild.xcodeproj
           if-no-files-found: ignore
+
+      - name: Publish IPA to Releases
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: unsigned-build-${{ github.run_id }}
+          name: Unsigned iOS Build ${{ github.run_id }}
+          generate_release_notes: true
+          prerelease: true
+          files: ${{ env.IPA_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
