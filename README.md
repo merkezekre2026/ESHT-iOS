@@ -4,16 +4,16 @@ Modern, premium tasarımlı ESHOT toplu ulaşım uygulaması.
 
 ## Proje Yapısı
 
-- `EshotIzmir/App`
-- `EshotIzmir/Models`
-- `EshotIzmir/ViewModels`
-- `EshotIzmir/Views`
-- `EshotIzmir/Components`
-- `EshotIzmir/Services`
-- `EshotIzmir/Repositories`
-- `EshotIzmir/Parsers`
-- `EshotIzmir/Utilities`
-- `EshotIzmir/Persistence`
+- `App`
+- `Models`
+- `ViewModels`
+- `Views`
+- `Components`
+- `Services`
+- `Repositories`
+- `Parsers`
+- `Utilities`
+- `Persistence`
 
 ## Gerçek Veri Kaynakları
 
